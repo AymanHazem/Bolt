@@ -1,13 +1,13 @@
-package com.ayman.jlink;
+package com.ayman.JLink;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 @SpringBootApplication
-public class JlinkApplication {
+public class JLinkApplication {
 
 	public static void main(String[] args) {
-		SpringApplication.run(JlinkApplication.class, args);
+		SpringApplication.run(JLinkApplication.class, args);
 	}
 
 }
