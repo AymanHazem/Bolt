@@ -9,6 +9,7 @@ import org.springframework.web.bind.annotation.*;
 public class URLController
 {
 
+
     @PostMapping(value = "/qr",produces = MediaType.IMAGE_PNG_VALUE)
     public byte[]getQR (@RequestBody QRcodeReq qrcodeReq)
     {
