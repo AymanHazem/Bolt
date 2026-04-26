@@ -2,14 +2,27 @@ spring:
   config:
     import: 'optional:file:.env[.properties]'
 
-  data:
-    mongodb:
-      uri: mongodb://${MONGO_USERNAME}:${MONGO_PASSWORD}@${MONGO_HOST}:${MONGO_PORT}/${MONGO_DATABASE}?authSource=admin
-      auto-index-creation: true
+  mongodb:
+    host: ${MONGO_HOST:localhost}
+    port: ${MONGO_PORT:27017}
+    database: ${MONGO_DATABASE:bolt}
+    username: ${MONGO_USERNAME:ayman}
+    password: ${MONGO_PASSWORD:root}
+    authentication-database: admin
+    auto-index-creation: true
 
+  data:
     redis:
-      host: ${REDIS_HOST}
-      port: ${REDIS_PORT}
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+
+  threads:
+    virtual:
+      enabled: true
 
 server:
   port: ${APP_PORT:8080}
+
+app:
+  base-url: ${APP_BASE_URL:http://localhost:8080}
+  default-ttl-hours: ${APP_DEFAULT_TTL_HOURS:24}
