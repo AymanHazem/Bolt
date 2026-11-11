@@ -9,7 +9,7 @@ public final class CacheConstants {
     
     // Reserved aliases that cannot be used
     public static final java.util.Set<String> RESERVED_ALIASES = java.util.Set.of(
-            "api", "admin", "health", "login", "register",
+            "urls", "error", "api", "admin", "health", "login", "register",
             "docs", "static", "assets", "favicon", "qr", "info"
     );
     

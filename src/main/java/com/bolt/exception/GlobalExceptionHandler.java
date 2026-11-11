@@ -2,13 +2,17 @@ package com.bolt.exception;
 
 import java.time.LocalDateTime;
 import java.util.stream.Collectors;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.validation.FieldError;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
+@Slf4j
 @RestControllerAdvice
 public class GlobalExceptionHandler {
 
@@ -17,26 +21,22 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(AliasNotFoundException.class)
     public ResponseEntity<ErrorResponse> handleAliasNotFound(AliasNotFoundException ex) {
-        return ResponseEntity.status(HttpStatus.NOT_FOUND)
-                .body(new ErrorResponse("NOT_FOUND", ex.getMessage(), LocalDateTime.now()));
+        return buildError(HttpStatus.NOT_FOUND, "NOT_FOUND", ex.getMessage());
     }
 
     @ExceptionHandler(AliasAlreadyTakenException.class)
     public ResponseEntity<ErrorResponse> handleAliasAlreadyTaken(AliasAlreadyTakenException ex) {
-        return ResponseEntity.status(HttpStatus.CONFLICT)
-                .body(new ErrorResponse("CONFLICT", ex.getMessage(), LocalDateTime.now()));
+        return buildError(HttpStatus.CONFLICT, "CONFLICT", ex.getMessage());
     }
 
     @ExceptionHandler(ReservedAliasException.class)
     public ResponseEntity<ErrorResponse> handleReservedAlias(ReservedAliasException ex) {
-        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
-                .body(new ErrorResponse("RESERVED_ALIAS", ex.getMessage(), LocalDateTime.now()));
+        return buildError(HttpStatus.BAD_REQUEST, "RESERVED_ALIAS", ex.getMessage());
     }
 
     @ExceptionHandler(QrGenerationException.class)
     public ResponseEntity<ErrorResponse> handleQrGeneration(QrGenerationException ex) {
-        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                .body(new ErrorResponse("QR_ERROR", ex.getMessage(), LocalDateTime.now()));
+        return buildError(HttpStatus.INTERNAL_SERVER_ERROR, "QR_ERROR", ex.getMessage());
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
@@ -46,7 +46,38 @@ public class GlobalExceptionHandler {
                 .stream()
                 .map(FieldError::getDefaultMessage)
                 .collect(Collectors.joining(", "));
-        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
-                .body(new ErrorResponse("VALIDATION_ERROR", message, LocalDateTime.now()));
+        return buildError(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", message);
+    }
+
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ResponseEntity<ErrorResponse> handleMalformedRequest(HttpMessageNotReadableException ex) {
+        return buildError(HttpStatus.BAD_REQUEST, "MALFORMED_REQUEST", "Malformed or unreadable request body");
+    }
+
+    @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
+    public ResponseEntity<ErrorResponse> handleMethodNotSupported(HttpRequestMethodNotSupportedException ex) {
+        return buildError(HttpStatus.METHOD_NOT_ALLOWED, "METHOD_NOT_ALLOWED", ex.getMessage());
+    }
+
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<ErrorResponse> handleIllegalArgument(IllegalArgumentException ex) {
+        return buildError(HttpStatus.BAD_REQUEST, "INVALID_ARGUMENT", ex.getMessage());
+    }
+
+    @ExceptionHandler(IllegalStateException.class)
+    public ResponseEntity<ErrorResponse> handleIllegalState(IllegalStateException ex) {
+        log.error("Internal state error", ex);
+        return buildError(HttpStatus.INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", "Internal server error");
+    }
+
+    @ExceptionHandler(Exception.class)
+    public ResponseEntity<ErrorResponse> handleUnexpected(Exception ex) {
+        log.error("Unhandled exception", ex);
+        return buildError(HttpStatus.INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", "An unexpected error occurred");
+    }
+
+    private ResponseEntity<ErrorResponse> buildError(HttpStatus status, String code, String message) {
+        return ResponseEntity.status(status)
+                .body(new ErrorResponse(code, message, LocalDateTime.now()));
     }
 }

@@ -14,5 +14,23 @@ public class AppConfig
     private int qrCodeMargin = 1;
     private long qrCacheTtlDays = 7;
     private int maxAliasGenerationRetries = 10;
+
+    /**
+     * Normalize configured baseUrl by trimming whitespace and stripping trailing slashes.
+     */
+    public void setBaseUrl(String baseUrl)
+    {
+        if (baseUrl == null)
+        {
+            this.baseUrl = null;
+            return;
+        }
+        String normalized = baseUrl.trim();
+        while (normalized.endsWith("/"))
+        {
+            normalized = normalized.substring(0, normalized.length() - 1);
+        }
+        this.baseUrl = normalized;
+    }
 }
 

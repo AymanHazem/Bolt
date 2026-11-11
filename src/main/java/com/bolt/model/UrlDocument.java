@@ -18,7 +18,7 @@ public class UrlDocument
     @Id
     private String id;
 
-    @Indexed(unique = true)
+    @Indexed(unique = true, partialFilter = "{ 'active': true }")
     private String alias;
 
     private String originalUrl;
