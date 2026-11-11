@@ -1,12 +1,15 @@
 package com.bolt.service;
+
 import com.bolt.config.AppConfig;
 import com.bolt.exception.QrGenerationException;
 import com.google.zxing.EncodeHintType;
-import java.io.ByteArrayOutputStream;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import net.glxn.qrgen.javase.QRCode;
 import org.springframework.stereotype.Service;
+
+import java.io.ByteArrayOutputStream;
+
 @Slf4j
 @Service
 @RequiredArgsConstructor
