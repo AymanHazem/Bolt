@@ -1,20 +1,10 @@
 spring:
-  config:
-    import: 'optional:file:.env[.properties]'
+  profiles:
+    default: local
 
   mongodb:
-    host: ${MONGO_HOST:localhost}
-    port: ${MONGO_PORT:27017}
-    database: ${MONGO_DATABASE:bolt}
-    username: ${MONGO_USERNAME:ayman}
-    password: ${MONGO_PASSWORD:root}
     authentication-database: admin
     auto-index-creation: true
-
-  data:
-    redis:
-      host: ${REDIS_HOST:localhost}
-      port: ${REDIS_PORT:6379}
 
   threads:
     virtual:
@@ -24,5 +14,15 @@ server:
   port: ${APP_PORT:8080}
 
 app:
-  base-url: ${APP_BASE_URL:http://localhost:8080}
   default-ttl-hours: ${APP_DEFAULT_TTL_HOURS:24}
+  # Alias generation parameters
+  alias-length: ${APP_ALIAS_LENGTH:6}
+  max-alias-generation-retries: ${APP_MAX_ALIAS_RETRIES:10}
+  # QR code parameters
+  qr-code-size: ${APP_QR_SIZE:300}
+  qr-code-margin: ${APP_QR_MARGIN:1}
+  qr-cache-ttl-days: ${APP_QR_CACHE_TTL:7}
+
+logging:
+  level:
+    com.bolt: ${LOG_LEVEL:INFO}
