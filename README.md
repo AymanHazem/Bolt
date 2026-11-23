@@ -5,7 +5,7 @@
 [![Redis](https://img.shields.io/badge/Redis-Latest-red.svg)](https://redis.io/)
 [![MongoDB](https://img.shields.io/badge/MongoDB-Latest-green.svg)](https://www.mongodb.com/)
 
-**Bolt** is a high-performance URL shortening service designed for sub-millisecond redirect resolution. Built with **Spring Boot 4.0.x** and **Java 25**, it leverages **Project Loom (Virtual Threads)**, **Redis caching**, and **MongoDB** to provide a scalable and robust infrastructure for link management.
+**Bolt** is a high-performance URL shortening service designed for sub-millisecond redirect resolution. Built with **Spring Boot 4.0.x** and **Java 25**, it leverages **Virtual Threads**, **Redis caching**, and **MongoDB** to provide a scalable and robust infrastructure for link management.
 
 ---
 
