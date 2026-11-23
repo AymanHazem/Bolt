@@ -1,5 +1,6 @@
 package com.bolt.controller;
 
+import com.bolt.config.AppConfig;
 import com.bolt.dto.CachedUrlEntry;
 import com.bolt.exception.AliasNotFoundException;
 import com.bolt.exception.GlobalExceptionHandler;
@@ -26,13 +27,15 @@ class RedirectControllerTest {
 
     @BeforeEach
     void setUp() {
-        mockMvc = MockMvcBuilders.standaloneSetup(new RedirectController(redirectService))
+        AppConfig appConfig = new AppConfig();
+        appConfig.setRedirectCacheMaxAgeSeconds(3600);
+        mockMvc = MockMvcBuilders.standaloneSetup(new RedirectController(redirectService, appConfig))
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();
     }
 
     @Test
-    void permanentUrlReturns301AndExpiringReturns302() throws Exception {
+    void permanentUrlReturns301WithCacheControlAndExpiringReturns302WithoutCacheControl() throws Exception {
         when(redirectService.resolveUrl("perm"))
                 .thenReturn(new CachedUrlEntry("https://example.com/perm", true));
         when(redirectService.resolveUrl("temp"))
@@ -40,11 +43,13 @@ class RedirectControllerTest {
 
         mockMvc.perform(get("/perm"))
                 .andExpect(status().isMovedPermanently())
-                .andExpect(header().string("Location", "https://example.com/perm"));
+                .andExpect(header().string("Location", "https://example.com/perm"))
+                .andExpect(header().string("Cache-Control", "max-age=3600, private"));
 
         mockMvc.perform(get("/temp"))
                 .andExpect(status().isFound())
-                .andExpect(header().string("Location", "https://example.com/temp"));
+                .andExpect(header().string("Location", "https://example.com/temp"))
+                .andExpect(header().doesNotExist("Cache-Control"));
     }
 
     @Test
@@ -55,5 +60,16 @@ class RedirectControllerTest {
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value("NOT_FOUND"))
                 .andExpect(jsonPath("$.timestamp").exists());
+    }
+
+    @Test
+    void invalidAliasPathsDoNotInvokeRedirectService() throws Exception {
+        mockMvc.perform(get("/favicon.ico"))
+                .andExpect(status().isNotFound());
+
+        mockMvc.perform(get("/x"))
+                .andExpect(status().isNotFound());
+
+        org.mockito.Mockito.verifyNoInteractions(redirectService);
     }
 }

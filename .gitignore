@@ -33,3 +33,7 @@ build/
 .vscode/
 .opencode/
 .env
+/.agents/
+/.ua/
+/docs/
+/AGENTS.md

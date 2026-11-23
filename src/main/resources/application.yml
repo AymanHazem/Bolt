@@ -4,7 +4,13 @@ spring:
 
   mongodb:
     authentication-database: admin
-    auto-index-creation: true
+
+  data:
+    mongodb:
+      auto-index-creation: true
+    redis:
+      timeout: ${REDIS_TIMEOUT:500ms}
+      connect-timeout: ${REDIS_CONNECT_TIMEOUT:2s}
 
   threads:
     virtual:
@@ -15,6 +21,7 @@ server:
 
 app:
   default-ttl-hours: ${APP_DEFAULT_TTL_HOURS:24}
+  redirect-cache-max-age-seconds: ${APP_REDIRECT_CACHE_MAX_AGE:3600}
   # Alias generation parameters
   alias-length: ${APP_ALIAS_LENGTH:6}
   max-alias-generation-retries: ${APP_MAX_ALIAS_RETRIES:10}

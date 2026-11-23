@@ -1,17 +1,15 @@
 package com.bolt.dto;
 
-import jakarta.validation.constraints.Max;
-import jakarta.validation.constraints.Min;
-import jakarta.validation.constraints.NotNull;
-import jakarta.validation.constraints.Pattern;
+import jakarta.validation.constraints.*;
 import lombok.Data;
 import org.hibernate.validator.constraints.URL;
 
 @Data
 public class ShortenRequest {
 
-    @NotNull
-    @URL(message = "Must be a valid URL")
+    @NotBlank(message = "Original URL is required")
+    @Size(max = 2048, message = "URL must be at most 2048 characters")
+    @URL(regexp = "^(?i)https?://.+", message = "Must be a valid http or https URL")
     private String originalUrl;
 
     @Pattern(

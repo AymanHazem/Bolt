@@ -8,7 +8,7 @@ import org.springframework.data.annotation.Id;
 import org.springframework.data.mongodb.core.index.Indexed;
 import org.springframework.data.mongodb.core.mapping.Document;
 
-import java.time.LocalDateTime;
+import java.time.Instant;
 
 @Data
 @Builder
@@ -28,10 +28,10 @@ public class UrlDocument
 
     private boolean customAlias;
 
-    private LocalDateTime createdAt;
+    private Instant createdAt;
 
     @Indexed(expireAfter = "PT0S")
-    private LocalDateTime expiresAt;
+    private Instant expiresAt;
 
     @Builder.Default
     private boolean active = true;

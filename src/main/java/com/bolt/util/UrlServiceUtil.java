@@ -1,7 +1,8 @@
 package com.bolt.util;
 
 import java.time.Duration;
-import java.time.LocalDateTime;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.concurrent.ThreadLocalRandom;
 
 /**
@@ -14,18 +15,24 @@ public final class UrlServiceUtil {
     }
 
     /**
+     * Current UTC timestamp truncated to millisecond precision (matching MongoDB BSON Date).
+     */
+    public static Instant now() {
+        return Instant.now().truncatedTo(ChronoUnit.MILLIS);
+    }
+
+    /**
      * Calculate TTL duration based on expiration time or default TTL.
-     * More efficient than duplicating this logic in multiple services.
+     * Returns {@link Duration#ZERO} when {@code expiresAt} is already past or present so callers skip caching.
      *
-     * @param expiresAt the expiration datetime (null for permanent)
+     * @param expiresAt the expiration instant (null for permanent)
      * @param defaultTtlHours default TTL in hours for permanent URLs
      * @return Duration for cache TTL
      */
-    public static Duration calculateTtl(LocalDateTime expiresAt, long defaultTtlHours) {
+    public static Duration calculateTtl(Instant expiresAt, long defaultTtlHours) {
         if (expiresAt != null) {
-            Duration ttl = Duration.between(LocalDateTime.now(), expiresAt);
-            // Ensure minimum 1 second TTL if already expired or zero
-            return ttl.isNegative() || ttl.isZero() ? Duration.ofSeconds(1) : ttl;
+            Duration ttl = Duration.between(Instant.now(), expiresAt);
+            return ttl.isNegative() || ttl.isZero() ? Duration.ZERO : ttl;
         }
         return Duration.ofHours(defaultTtlHours);
     }
@@ -41,7 +48,7 @@ public final class UrlServiceUtil {
         char[] chars = new char[length];
         ThreadLocalRandom random = ThreadLocalRandom.current();
         String charset = CacheConstants.ALIAS_CHARSET;
-        
+
         for (int i = 0; i < length; i++) {
             chars[i] = charset.charAt(random.nextInt(charset.length()));
         }
@@ -49,10 +56,10 @@ public final class UrlServiceUtil {
     }
 
     /**
-     * Check if datetime is expired or will expire soon
+     * Check if instant is expired
      */
-    public static boolean isExpired(LocalDateTime expiresAt) {
-        return expiresAt != null && !LocalDateTime.now().isBefore(expiresAt);
+    public static boolean isExpired(Instant expiresAt) {
+        return expiresAt != null && !Instant.now().isBefore(expiresAt);
     }
 }
 

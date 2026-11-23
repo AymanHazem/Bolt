@@ -1,10 +1,7 @@
 package com.bolt.controller;
 
 import com.bolt.dto.ShortenResponse;
-import com.bolt.exception.AliasAlreadyTakenException;
-import com.bolt.exception.AliasNotFoundException;
-import com.bolt.exception.GlobalExceptionHandler;
-import com.bolt.exception.ReservedAliasException;
+import com.bolt.exception.*;
 import com.bolt.service.UrlService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -15,9 +12,10 @@ import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
-import java.time.LocalDateTime;
+import java.time.Instant;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
@@ -39,28 +37,28 @@ class UrlControllerTest {
     }
 
     @Test
-    void createShortUrlReturns201WithLocationHeader() throws Exception {
+    void createShortUrlReturns201WithLocationHeaderAndForwardsIncludeQr() throws Exception {
         ShortenResponse res = ShortenResponse.builder()
                 .alias("abc123")
                 .shortUrl("http://localhost:8080/abc123")
-                .qrCode("data:image/png;base64,ZmFrZQ==")
                 .originalUrl("https://example.com")
-                .createdAt(LocalDateTime.now())
+                .createdAt(Instant.now())
                 .permanent(true)
                 .build();
-        when(urlService.createShortUrl(any())).thenReturn(res);
+        when(urlService.createShortUrl(any(), eq(false))).thenReturn(res);
 
         mockMvc.perform(post("/urls")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"originalUrl\":\"https://example.com\",\"customAlias\":\"abc123\"}"))
                 .andExpect(status().isCreated())
                 .andExpect(header().string("Location", "http://localhost:8080/abc123"))
-                .andExpect(jsonPath("$.alias").value("abc123"));
+                .andExpect(jsonPath("$.alias").value("abc123"))
+                .andExpect(jsonPath("$.qrCode").doesNotExist());
     }
 
     @Test
     void reservedAliasReturnsStandard400ErrorShape() throws Exception {
-        when(urlService.createShortUrl(any())).thenThrow(new ReservedAliasException("urls"));
+        when(urlService.createShortUrl(any(), eq(false))).thenThrow(new ReservedAliasException("urls"));
 
         mockMvc.perform(post("/urls")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -72,7 +70,7 @@ class UrlControllerTest {
 
     @Test
     void duplicateAliasReturnsStandard409ErrorShape() throws Exception {
-        when(urlService.createShortUrl(any())).thenThrow(new AliasAlreadyTakenException("taken"));
+        when(urlService.createShortUrl(any(), eq(false))).thenThrow(new AliasAlreadyTakenException("taken"));
 
         mockMvc.perform(post("/urls")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -83,7 +81,7 @@ class UrlControllerTest {
     }
 
     @Test
-    void malformedJsonAndUnsupportedMethodUseStandardErrorShape() throws Exception {
+    void malformedJsonUnsupportedMethodAndUnsupportedMediaTypeUseStandardErrorShape() throws Exception {
         mockMvc.perform(post("/urls")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{not-json"))
@@ -95,26 +93,41 @@ class UrlControllerTest {
                 .andExpect(status().isMethodNotAllowed())
                 .andExpect(jsonPath("$.code").value("METHOD_NOT_ALLOWED"))
                 .andExpect(jsonPath("$.timestamp").exists());
+
+        mockMvc.perform(post("/urls")
+                        .contentType(MediaType.TEXT_PLAIN)
+                        .content("plain"))
+                .andExpect(status().isUnsupportedMediaType())
+                .andExpect(jsonPath("$.code").value("UNSUPPORTED_MEDIA_TYPE"))
+                .andExpect(jsonPath("$.timestamp").exists());
     }
 
     @Test
-    void unexpectedRuntimeAndIllegalStateReturnSanitized500() throws Exception {
-        when(urlService.getUrlInfo("boom")).thenThrow(new IllegalStateException("secret internal detail"));
+    void unexpectedRuntimeIllegalStateAndQrErrorReturnSanitized500() throws Exception {
+        when(urlService.getUrlInfo("boom12", false)).thenThrow(new IllegalStateException("secret internal detail"));
 
-        mockMvc.perform(get("/urls/boom"))
+        mockMvc.perform(get("/urls/boom12"))
                 .andExpect(status().isInternalServerError())
                 .andExpect(jsonPath("$.code").value("INTERNAL_ERROR"))
                 .andExpect(jsonPath("$.message").value("Internal server error"));
+
+        when(urlService.getQrCode("qrboom")).thenThrow(new QrGenerationException("internal detail"));
+
+        mockMvc.perform(get("/urls/qrboom/qr"))
+                .andExpect(status().isInternalServerError())
+                .andExpect(jsonPath("$.code").value("QR_ERROR"))
+                .andExpect(jsonPath("$.message").value("Failed to generate QR code"));
     }
 
     @Test
-    void getQrCodeAndDeleteUrlWorkAsExpected() throws Exception {
+    void getQrCodeIncludesCacheHeaderAndDeleteUrlWorksAsExpected() throws Exception {
         byte[] png = new byte[] {1, 2, 3};
         when(urlService.getQrCode("abc123")).thenReturn(png);
 
         mockMvc.perform(get("/urls/abc123/qr"))
                 .andExpect(status().isOk())
                 .andExpect(content().contentType(MediaType.IMAGE_PNG))
+                .andExpect(header().string("Cache-Control", "max-age=86400, public"))
                 .andExpect(content().bytes(png));
 
         doThrow(new AliasNotFoundException("missing")).when(urlService).deleteUrl("missing");
@@ -125,15 +138,16 @@ class UrlControllerTest {
     }
 
     @Test
-    void validationErrorAndInvalidUriReturn400WithStandardErrorShape() throws Exception {
+    void validationErrorIncludesFieldNamesAndInvalidUriReturns400() throws Exception {
         mockMvc.perform(post("/urls")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"originalUrl\":\"not-a-url\",\"customAlias\":\"x\"}"))
+                        .content("{\"originalUrl\":\"\",\"customAlias\":\"x\"}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"))
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("originalUrl:")))
                 .andExpect(jsonPath("$.timestamp").exists());
 
-        when(urlService.createShortUrl(any())).thenThrow(new IllegalArgumentException("Illegal character in path"));
+        when(urlService.createShortUrl(any(), eq(false))).thenThrow(new IllegalArgumentException("Illegal character in path"));
 
         mockMvc.perform(post("/urls")
                         .contentType(MediaType.APPLICATION_JSON)

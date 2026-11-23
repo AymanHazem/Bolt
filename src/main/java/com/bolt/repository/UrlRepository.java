@@ -5,8 +5,7 @@ import org.springframework.data.mongodb.repository.MongoRepository;
 
 import java.util.Optional;
 
-public interface UrlRepository extends MongoRepository<UrlDocument, String> {
+public interface UrlRepository extends MongoRepository<UrlDocument, String>, UrlRepositoryCustom {
 
     Optional<UrlDocument> findByAliasAndActiveTrue(String alias);
-    boolean existsByAliasAndActiveTrue(String alias);
 }

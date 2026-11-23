@@ -3,7 +3,8 @@ package com.bolt.util;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
-import java.time.LocalDateTime;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -16,14 +17,14 @@ class UrlServiceUtilTest {
     }
 
     @Test
-    void calculateTtlClampsExpiredTimestampToOneSecond() {
-        Duration ttl = UrlServiceUtil.calculateTtl(LocalDateTime.now().minusMinutes(5), 24);
-        assertThat(ttl).isEqualTo(Duration.ofSeconds(1));
+    void calculateTtlReturnsZeroForExpiredTimestamp() {
+        Duration ttl = UrlServiceUtil.calculateTtl(Instant.now().minus(5, ChronoUnit.MINUTES), 24);
+        assertThat(ttl).isEqualTo(Duration.ZERO);
     }
 
     @Test
     void calculateTtlUsesRemainingTimeForFutureExpiry() {
-        Duration ttl = UrlServiceUtil.calculateTtl(LocalDateTime.now().plusHours(48), 24);
+        Duration ttl = UrlServiceUtil.calculateTtl(Instant.now().plus(48, ChronoUnit.HOURS), 24);
         assertThat(ttl).isGreaterThan(Duration.ofHours(47));
         assertThat(ttl).isLessThanOrEqualTo(Duration.ofHours(48));
     }
@@ -40,7 +41,7 @@ class UrlServiceUtilTest {
     @Test
     void isExpiredDetectsPastAndFutureTimestamps() {
         assertThat(UrlServiceUtil.isExpired(null)).isFalse();
-        assertThat(UrlServiceUtil.isExpired(LocalDateTime.now().plusMinutes(10))).isFalse();
-        assertThat(UrlServiceUtil.isExpired(LocalDateTime.now().minusSeconds(1))).isTrue();
+        assertThat(UrlServiceUtil.isExpired(Instant.now().plus(10, ChronoUnit.MINUTES))).isFalse();
+        assertThat(UrlServiceUtil.isExpired(Instant.now().minusSeconds(1))).isTrue();
     }
 }

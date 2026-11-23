@@ -11,18 +11,16 @@ import com.bolt.model.UrlDocument;
 import com.bolt.repository.UrlRepository;
 import com.bolt.util.CacheConstants;
 import com.bolt.util.UrlServiceUtil;
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DuplicateKeyException;
-import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
 import java.net.URI;
 import java.time.Duration;
-import java.time.LocalDateTime;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.Base64;
 import java.util.Locale;
 
@@ -32,19 +30,22 @@ import java.util.Locale;
 public class UrlService
 {
     private final UrlRepository urlRepository;
-    private final RedisTemplate<String, String> redisTemplate;
-    private final RedisTemplate<String, byte[]> redisByteTemplate;
-    private final ObjectMapper objectMapper;
+    private final UrlCacheService urlCacheService;
     private final QrService qrService;
     private final AppConfig appConfig;
 
     public ShortenResponse createShortUrl(ShortenRequest request)
     {
-        URI.create(request.getOriginalUrl());
+        return createShortUrl(request, false);
+    }
+
+    public ShortenResponse createShortUrl(ShortenRequest request, boolean includeQr)
+    {
+        validateTargetUrl(request.getOriginalUrl());
 
         boolean permanent = request.getExpiresInDays() == null;
-        LocalDateTime now = LocalDateTime.now();
-        LocalDateTime expiresAt = permanent ? null : now.plusDays(request.getExpiresInDays());
+        Instant now = UrlServiceUtil.now();
+        Instant expiresAt = permanent ? null : now.plus(request.getExpiresInDays(), ChronoUnit.DAYS);
 
         String requestedCustomAlias = request.getCustomAlias();
         UrlDocument saved;
@@ -58,21 +59,26 @@ public class UrlService
         }
 
         cacheUrlEntry(saved.getAlias(), saved.getOriginalUrl(), permanent, saved.getExpiresAt());
-        byte[] qrBytes = generateAndCacheQrBytes(saved.getAlias(), saved.getExpiresAt());
+        byte[] qrBytes = includeQr ? generateAndCacheQrBytes(saved.getAlias(), saved.getExpiresAt()) : null;
         log.info("Created shortened URL: {} -> {}", saved.getAlias(), saved.getOriginalUrl());
         return mapToResponse(saved, qrBytes);
     }
 
     public ShortenResponse getUrlInfo(String alias)
     {
+        return getUrlInfo(alias, false);
+    }
+
+    public ShortenResponse getUrlInfo(String alias, boolean includeQr)
+    {
         UrlDocument doc = findActiveValidDocument(alias);
-        byte[] qrBytes = getOrCacheQrBytes(doc.getAlias(), doc.getExpiresAt());
+        byte[] qrBytes = includeQr ? getOrCacheQrBytes(doc.getAlias(), doc.getExpiresAt()) : null;
         return mapToResponse(doc, qrBytes);
     }
 
     public byte[] getQrCode(String alias)
     {
-        byte[] cached = redisByteTemplate.opsForValue().get(CacheConstants.QR_CACHE_PREFIX + alias);
+        byte[] cached = urlCacheService.getQr(alias);
         if (cached != null)
         {
             log.debug("Cache hit for QR code: {}", alias);
@@ -85,27 +91,62 @@ public class UrlService
 
     public void deleteUrl(String alias)
     {
-        UrlDocument doc = findActiveValidDocument(alias);
-        doc.setActive(false);
-        urlRepository.save(doc);
-        redisTemplate.delete(CacheConstants.URL_CACHE_PREFIX + alias);
-        redisByteTemplate.delete(CacheConstants.QR_CACHE_PREFIX + alias);
+        urlCacheService.evict(alias);
+        boolean deactivated = urlRepository.deactivateActive(alias, Instant.now());
+        if (!deactivated)
+        {
+            log.debug("Alias not found, inactive, or expired on delete: {}", alias);
+            throw new AliasNotFoundException(alias);
+        }
+        urlCacheService.evict(alias);
         log.info("Deleted URL alias: {}", alias);
     }
 
+    private void validateTargetUrl(String originalUrl)
+    {
+        if (!StringUtils.hasText(originalUrl))
+        {
+            throw new IllegalArgumentException("Original URL is required");
+        }
+        URI target = URI.create(originalUrl);
+        String scheme = target.getScheme();
+        if (scheme == null || (!"http".equalsIgnoreCase(scheme) && !"https".equalsIgnoreCase(scheme)))
+        {
+            throw new IllegalArgumentException("URL scheme must be http or https");
+        }
+        if (!StringUtils.hasText(target.getHost()))
+        {
+            throw new IllegalArgumentException("URL host is required");
+        }
+        if (StringUtils.hasText(appConfig.getBaseUrl()))
+        {
+            URI base = URI.create(appConfig.getBaseUrl());
+            if (base.getHost() != null
+                && base.getHost().equalsIgnoreCase(target.getHost())
+                && effectivePort(base) == effectivePort(target))
+            {
+                throw new IllegalArgumentException("Cannot shorten URLs pointing to this service");
+            }
+        }
+    }
+
+    private static int effectivePort(URI uri)
+    {
+        if (uri.getPort() != -1)
+        {
+            return uri.getPort();
+        }
+        return "https".equalsIgnoreCase(uri.getScheme()) ? 443 : 80;
+    }
+
     private UrlDocument saveWithCustomAlias(String alias, String originalUrl,
-                                            LocalDateTime now, LocalDateTime expiresAt)
+                                            Instant now, Instant expiresAt)
     {
         String normalizedAlias = alias.toLowerCase(Locale.ROOT);
         if (CacheConstants.RESERVED_ALIASES.contains(normalizedAlias))
         {
             log.warn("Attempted to use reserved alias: {}", alias);
             throw new ReservedAliasException(alias);
-        }
-        if (urlRepository.existsByAliasAndActiveTrue(alias))
-        {
-            log.warn("Alias already taken: {}", alias);
-            throw new AliasAlreadyTakenException(alias);
         }
         UrlDocument doc = buildDocument(alias, originalUrl, true, now, expiresAt);
         try
@@ -114,18 +155,29 @@ public class UrlService
         }
         catch (DuplicateKeyException e)
         {
-            log.warn("Concurrent duplicate alias creation for: {}", alias);
+            if (urlRepository.deactivateExpired(alias, now))
+            {
+                try
+                {
+                    return urlRepository.save(doc);
+                }
+                catch (DuplicateKeyException retryEx)
+                {
+                    log.warn("Concurrent duplicate alias creation after expired cleanup for: {}", alias);
+                    throw new AliasAlreadyTakenException(alias);
+                }
+            }
+            log.warn("Alias already taken: {}", alias);
             throw new AliasAlreadyTakenException(alias);
         }
     }
 
-    private UrlDocument saveWithGeneratedAlias(String originalUrl, LocalDateTime now, LocalDateTime expiresAt)
+    private UrlDocument saveWithGeneratedAlias(String originalUrl, Instant now, Instant expiresAt)
     {
         for (int attempt = 0; attempt < appConfig.getMaxAliasGenerationRetries(); attempt++)
         {
             String candidate = UrlServiceUtil.generateRandomAlias(appConfig.getAliasLength());
-            if (CacheConstants.RESERVED_ALIASES.contains(candidate.toLowerCase(Locale.ROOT))
-                || urlRepository.existsByAliasAndActiveTrue(candidate))
+            if (CacheConstants.RESERVED_ALIASES.contains(candidate.toLowerCase(Locale.ROOT)))
             {
                 continue;
             }
@@ -136,7 +188,7 @@ public class UrlService
             }
             catch (DuplicateKeyException e)
             {
-                log.debug("Concurrent random alias collision for candidate: {}, retrying", candidate);
+                log.debug("Random alias collision for candidate: {}, retrying", candidate);
             }
         }
         throw new IllegalStateException("Failed to generate unique alias after " +
@@ -144,7 +196,7 @@ public class UrlService
     }
 
     private UrlDocument buildDocument(String alias, String originalUrl, boolean customAlias,
-                                      LocalDateTime now, LocalDateTime expiresAt)
+                                      Instant now, Instant expiresAt)
     {
         return UrlDocument.builder()
             .alias(alias)
@@ -161,12 +213,12 @@ public class UrlService
         UrlDocument doc = urlRepository.findByAliasAndActiveTrue(alias)
             .orElseThrow(() ->
             {
-                log.warn("Alias not found or inactive: {}", alias);
+                log.debug("Alias not found or inactive: {}", alias);
                 return new AliasNotFoundException(alias);
             });
         if (UrlServiceUtil.isExpired(doc.getExpiresAt()))
         {
-            log.warn("URL expired: {}", alias);
+            log.debug("URL expired: {}", alias);
             throw new AliasNotFoundException(alias);
         }
         return doc;
@@ -175,25 +227,16 @@ public class UrlService
     /**
      * Cache a URL entry in Redis with appropriate TTL.
      */
-    private void cacheUrlEntry(String alias, String originalUrl, boolean permanent, LocalDateTime expiresAt)
+    private void cacheUrlEntry(String alias, String originalUrl, boolean permanent, Instant expiresAt)
     {
         CachedUrlEntry entry = new CachedUrlEntry(originalUrl, permanent);
-        try
-        {
-            String json = objectMapper.writeValueAsString(entry);
-            Duration ttl = UrlServiceUtil.calculateTtl(expiresAt, appConfig.getDefaultTtlHours());
-            redisTemplate.opsForValue().set(CacheConstants.URL_CACHE_PREFIX + alias, json, ttl);
-        }
-        catch (JsonProcessingException e)
-        {
-            log.error("Failed to cache URL entry for alias: {}", alias, e);
-            throw new IllegalStateException("Failed to serialize URL cache entry", e);
-        }
+        Duration ttl = UrlServiceUtil.calculateTtl(expiresAt, appConfig.getDefaultTtlHours());
+        urlCacheService.putUrl(alias, entry, ttl);
     }
 
-    private byte[] getOrCacheQrBytes(String alias, LocalDateTime expiresAt)
+    private byte[] getOrCacheQrBytes(String alias, Instant expiresAt)
     {
-        byte[] cached = redisByteTemplate.opsForValue().get(CacheConstants.QR_CACHE_PREFIX + alias);
+        byte[] cached = urlCacheService.getQr(alias);
         if (cached != null)
         {
             return cached;
@@ -201,16 +244,16 @@ public class UrlService
         return generateAndCacheQrBytes(alias, expiresAt);
     }
 
-    private byte[] generateAndCacheQrBytes(String alias, LocalDateTime expiresAt)
+    private byte[] generateAndCacheQrBytes(String alias, Instant expiresAt)
     {
         String shortUrl = buildShortUrl(alias);
         byte[] qrBytes = qrService.generateQr(shortUrl);
         Duration qrTtl = calculateQrCacheTtl(expiresAt);
-        redisByteTemplate.opsForValue().set(CacheConstants.QR_CACHE_PREFIX + alias, qrBytes, qrTtl);
+        urlCacheService.putQr(alias, qrBytes, qrTtl);
         return qrBytes;
     }
 
-    private Duration calculateQrCacheTtl(LocalDateTime expiresAt)
+    private Duration calculateQrCacheTtl(Instant expiresAt)
     {
         Duration maxQrTtl = Duration.ofDays(appConfig.getQrCacheTtlDays());
         if (expiresAt == null)
@@ -230,7 +273,9 @@ public class UrlService
     {
         boolean permanent = doc.getExpiresAt() == null;
         String shortUrl = buildShortUrl(doc.getAlias());
-        String qrCode = "data:image/png;base64," + Base64.getEncoder().encodeToString(qrBytes);
+        String qrCode = qrBytes != null
+            ? "data:image/png;base64," + Base64.getEncoder().encodeToString(qrBytes)
+            : null;
         return ShortenResponse.builder()
             .alias(doc.getAlias())
             .shortUrl(shortUrl)

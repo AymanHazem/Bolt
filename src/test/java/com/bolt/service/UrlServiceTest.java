@@ -9,9 +9,6 @@ import com.bolt.exception.ReservedAliasException;
 import com.bolt.model.UrlDocument;
 import com.bolt.repository.UrlRepository;
 import com.bolt.util.CacheConstants;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.SerializationFeature;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -24,8 +21,10 @@ import org.springframework.data.redis.core.ValueOperations;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
-import java.time.LocalDateTime;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.Base64;
+import java.util.List;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -49,42 +48,52 @@ class UrlServiceTest {
     @Mock
     private QrService qrService;
 
-    private AppConfig appConfig;
     private UrlService urlService;
 
     @BeforeEach
     void setUp() {
-        appConfig = new AppConfig();
+        AppConfig appConfig = new AppConfig();
         appConfig.setBaseUrl("http://localhost:8080/");
         appConfig.setDefaultTtlHours(24);
         appConfig.setAliasLength(6);
         appConfig.setMaxAliasGenerationRetries(3);
         appConfig.setQrCacheTtlDays(7);
 
-        ObjectMapper objectMapper = new ObjectMapper();
-        objectMapper.registerModule(new JavaTimeModule());
-        objectMapper.disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
-
         lenient().when(redisTemplate.opsForValue()).thenReturn(stringValueOps);
         lenient().when(redisByteTemplate.opsForValue()).thenReturn(byteValueOps);
 
-        urlService = new UrlService(
-                urlRepository, redisTemplate, redisByteTemplate, objectMapper, qrService, appConfig);
+        UrlCacheService urlCacheService = new UrlCacheService(redisTemplate, redisByteTemplate);
+        urlService = new UrlService(urlRepository, urlCacheService, qrService, appConfig);
     }
 
     @Test
-    void createShortUrlUsesExpiresAtForUrlAndClampedQrCacheTtl() {
+    void createShortUrlOmitsQrByDefaultAndSkipsQrGeneration() {
+        ShortenRequest req = new ShortenRequest();
+        req.setOriginalUrl("https://example.com/path");
+        req.setCustomAlias("my-link");
+
+        when(urlRepository.save(any(UrlDocument.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        ShortenResponse res = urlService.createShortUrl(req, false);
+
+        assertThat(res.getAlias()).isEqualTo("my-link");
+        assertThat(res.getQrCode()).isNull();
+        verify(qrService, never()).generateQr(anyString());
+        verify(byteValueOps, never()).set(anyString(), any(), any());
+    }
+
+    @Test
+    void createShortUrlWithIncludeQrUsesExpiresAtForUrlAndClampedQrCacheTtl() {
         ShortenRequest req = new ShortenRequest();
         req.setOriginalUrl("https://example.com/path");
         req.setCustomAlias("my-link");
         req.setExpiresInDays(3);
 
         byte[] qrBytes = "fake-png".getBytes(StandardCharsets.UTF_8);
-        when(urlRepository.existsByAliasAndActiveTrue("my-link")).thenReturn(false);
         when(urlRepository.save(any(UrlDocument.class))).thenAnswer(inv -> inv.getArgument(0));
         when(qrService.generateQr("http://localhost:8080/my-link")).thenReturn(qrBytes);
 
-        ShortenResponse res = urlService.createShortUrl(req);
+        ShortenResponse res = urlService.createShortUrl(req, true);
 
         assertThat(res.getAlias()).isEqualTo("my-link");
         assertThat(res.getShortUrl()).isEqualTo("http://localhost:8080/my-link");
@@ -92,7 +101,11 @@ class UrlServiceTest {
         assertThat(res.getQrCode()).isEqualTo("data:image/png;base64," + Base64.getEncoder().encodeToString(qrBytes));
 
         ArgumentCaptor<Duration> urlTtlCaptor = ArgumentCaptor.forClass(Duration.class);
-        verify(stringValueOps).set(eq(CacheConstants.URL_CACHE_PREFIX + "my-link"), anyString(), urlTtlCaptor.capture());
+        verify(stringValueOps).set(
+                eq(CacheConstants.URL_CACHE_PREFIX + "my-link"),
+                eq("0|https://example.com/path"),
+                urlTtlCaptor.capture()
+        );
         assertThat(urlTtlCaptor.getValue()).isGreaterThan(Duration.ofDays(2));
         assertThat(urlTtlCaptor.getValue()).isLessThanOrEqualTo(Duration.ofDays(3));
 
@@ -100,6 +113,17 @@ class UrlServiceTest {
         verify(byteValueOps).set(eq(CacheConstants.QR_CACHE_PREFIX + "my-link"), eq(qrBytes), qrTtlCaptor.capture());
         assertThat(qrTtlCaptor.getValue()).isGreaterThan(Duration.ofDays(2));
         assertThat(qrTtlCaptor.getValue()).isLessThanOrEqualTo(Duration.ofDays(3));
+    }
+
+    @Test
+    void createShortUrlRejectsSelfReferencingTargetUrl() {
+        ShortenRequest req = new ShortenRequest();
+        req.setOriginalUrl("http://localhost:8080/some-alias");
+
+        assertThatThrownBy(() -> urlService.createShortUrl(req, false))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Cannot shorten URLs pointing to this service");
+        verify(urlRepository, never()).save(any());
     }
 
     @Test
@@ -114,30 +138,45 @@ class UrlServiceTest {
     }
 
     @Test
-    void createShortUrlTranslatesDuplicateKeyExceptionOnCustomAliasToConflict() {
+    void createShortUrlReclaimsExpiredCustomAliasOnDuplicateKeyException() {
+        ShortenRequest req = new ShortenRequest();
+        req.setOriginalUrl("https://example.com/new");
+        req.setCustomAlias("reclaim");
+
+        when(urlRepository.save(any(UrlDocument.class)))
+                .thenThrow(new DuplicateKeyException("duplicate"))
+                .thenAnswer(inv -> inv.getArgument(0));
+        when(urlRepository.deactivateExpired(eq("reclaim"), any(Instant.class))).thenReturn(true);
+
+        ShortenResponse res = urlService.createShortUrl(req, false);
+
+        assertThat(res.getAlias()).isEqualTo("reclaim");
+        verify(urlRepository, times(2)).save(any(UrlDocument.class));
+    }
+
+    @Test
+    void createShortUrlTranslatesDuplicateKeyExceptionOnActiveCustomAliasToConflict() {
         ShortenRequest req = new ShortenRequest();
         req.setOriginalUrl("https://example.com");
         req.setCustomAlias("raced");
 
-        when(urlRepository.existsByAliasAndActiveTrue("raced")).thenReturn(false);
         when(urlRepository.save(any(UrlDocument.class))).thenThrow(new DuplicateKeyException("duplicate"));
+        when(urlRepository.deactivateExpired(eq("raced"), any(Instant.class))).thenReturn(false);
 
         assertThatThrownBy(() -> urlService.createShortUrl(req))
                 .isInstanceOf(AliasAlreadyTakenException.class);
     }
 
     @Test
-    void createShortUrlRetriesRandomAliasOnConcurrentDuplicateKeyException() {
+    void createShortUrlRetriesRandomAliasOnDuplicateKeyException() {
         ShortenRequest req = new ShortenRequest();
         req.setOriginalUrl("https://example.com");
 
-        when(urlRepository.existsByAliasAndActiveTrue(anyString())).thenReturn(false);
         when(urlRepository.save(any(UrlDocument.class)))
                 .thenThrow(new DuplicateKeyException("collision"))
                 .thenAnswer(inv -> inv.getArgument(0));
-        when(qrService.generateQr(anyString())).thenReturn(new byte[] {1, 2, 3});
 
-        ShortenResponse res = urlService.createShortUrl(req);
+        ShortenResponse res = urlService.createShortUrl(req, false);
         assertThat(res.getAlias()).hasSize(6);
         verify(urlRepository, times(2)).save(any(UrlDocument.class));
     }
@@ -147,7 +186,7 @@ class UrlServiceTest {
         ShortenRequest req = new ShortenRequest();
         req.setOriginalUrl("https://example.com");
 
-        when(urlRepository.existsByAliasAndActiveTrue(anyString())).thenReturn(true);
+        when(urlRepository.save(any(UrlDocument.class))).thenThrow(new DuplicateKeyException("collision"));
 
         assertThatThrownBy(() -> urlService.createShortUrl(req))
                 .isInstanceOf(IllegalStateException.class)
@@ -159,29 +198,29 @@ class UrlServiceTest {
         UrlDocument expired = UrlDocument.builder()
                 .alias("old")
                 .originalUrl("https://example.com")
-                .expiresAt(LocalDateTime.now().minusMinutes(1))
+                .expiresAt(Instant.now().minus(1, ChronoUnit.MINUTES))
                 .active(true)
                 .build();
         when(urlRepository.findByAliasAndActiveTrue("old")).thenReturn(Optional.of(expired));
 
-        assertThatThrownBy(() -> urlService.getUrlInfo("old"))
+        assertThatThrownBy(() -> urlService.getUrlInfo("old", true))
                 .isInstanceOf(AliasNotFoundException.class);
         verify(qrService, never()).generateQr(anyString());
     }
 
     @Test
-    void getUrlInfoReusesCachedQrBytesWhenPresent() {
+    void getUrlInfoReusesCachedQrBytesWhenIncludeQrIsTrue() {
         UrlDocument doc = UrlDocument.builder()
                 .alias("abc123")
                 .originalUrl("https://example.com")
-                .createdAt(LocalDateTime.now())
+                .createdAt(Instant.now())
                 .active(true)
                 .build();
         byte[] cachedQr = new byte[] {10, 20, 30};
         when(urlRepository.findByAliasAndActiveTrue("abc123")).thenReturn(Optional.of(doc));
         when(byteValueOps.get(CacheConstants.QR_CACHE_PREFIX + "abc123")).thenReturn(cachedQr);
 
-        ShortenResponse res = urlService.getUrlInfo("abc123");
+        ShortenResponse res = urlService.getUrlInfo("abc123", true);
 
         assertThat(res.getQrCode()).isEqualTo("data:image/png;base64," + Base64.getEncoder().encodeToString(cachedQr));
         verify(qrService, never()).generateQr(anyString());
@@ -207,19 +246,23 @@ class UrlServiceTest {
     }
 
     @Test
-    void deleteUrlSoftDeletesAndEvictsBothUrlAndQrRedisKeys() {
-        UrlDocument doc = UrlDocument.builder()
-                .alias("delme")
-                .originalUrl("https://example.com")
-                .active(true)
-                .build();
-        when(urlRepository.findByAliasAndActiveTrue("delme")).thenReturn(Optional.of(doc));
+    void deleteUrlAtomicallyDeactivatesAndEvictsBothRedisKeysTwice() {
+        when(urlRepository.deactivateActive(eq("delme"), any(Instant.class))).thenReturn(true);
 
         urlService.deleteUrl("delme");
 
-        assertThat(doc.isActive()).isFalse();
-        verify(urlRepository).save(doc);
-        verify(redisTemplate).delete(CacheConstants.URL_CACHE_PREFIX + "delme");
-        verify(redisByteTemplate).delete(CacheConstants.QR_CACHE_PREFIX + "delme");
+        verify(urlRepository).deactivateActive(eq("delme"), any(Instant.class));
+        verify(redisTemplate, times(2)).delete(List.of(
+                CacheConstants.URL_CACHE_PREFIX + "delme",
+                CacheConstants.QR_CACHE_PREFIX + "delme"
+        ));
+    }
+
+    @Test
+    void deleteUrlThrowsNotFoundWhenNoActiveDocumentModified() {
+        when(urlRepository.deactivateActive(eq("missing"), any(Instant.class))).thenReturn(false);
+
+        assertThatThrownBy(() -> urlService.deleteUrl("missing"))
+                .isInstanceOf(AliasNotFoundException.class);
     }
 }

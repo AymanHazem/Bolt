@@ -6,7 +6,6 @@ import com.bolt.exception.AliasNotFoundException;
 import com.bolt.model.UrlDocument;
 import com.bolt.repository.UrlRepository;
 import com.bolt.util.CacheConstants;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -16,7 +15,7 @@ import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.data.redis.core.ValueOperations;
 
 import java.time.Duration;
-import java.time.LocalDateTime;
+import java.time.Instant;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -32,6 +31,8 @@ class RedirectServiceTest {
     @Mock
     private RedisTemplate<String, String> redisTemplate;
     @Mock
+    private RedisTemplate<String, byte[]> redisByteTemplate;
+    @Mock
     private ValueOperations<String, String> stringValueOps;
 
     private RedirectService redirectService;
@@ -41,13 +42,14 @@ class RedirectServiceTest {
         AppConfig appConfig = new AppConfig();
         appConfig.setDefaultTtlHours(24);
         lenient().when(redisTemplate.opsForValue()).thenReturn(stringValueOps);
-        redirectService = new RedirectService(urlRepository, redisTemplate, new ObjectMapper(), appConfig);
+        UrlCacheService urlCacheService = new UrlCacheService(redisTemplate, redisByteTemplate);
+        redirectService = new RedirectService(urlRepository, urlCacheService, appConfig);
     }
 
     @Test
     void resolveUrlReturnsCachedEntryWithoutHittingMongo() {
         when(stringValueOps.get(CacheConstants.URL_CACHE_PREFIX + "fast"))
-                .thenReturn("{\"originalUrl\":\"https://example.com\",\"permanent\":true}");
+                .thenReturn("1|https://example.com");
 
         CachedUrlEntry entry = redirectService.resolveUrl("fast");
 
@@ -57,13 +59,14 @@ class RedirectServiceTest {
     }
 
     @Test
-    void resolveUrlDeletesCorruptedCacheAndFallsBackToMongo() {
+    void resolveUrlEvictsLegacyJsonOrCorruptedCacheAndFallsBackToMongo() {
         UrlDocument doc = UrlDocument.builder()
                 .alias("heal")
                 .originalUrl("https://example.com/recovered")
                 .active(true)
                 .build();
-        when(stringValueOps.get(CacheConstants.URL_CACHE_PREFIX + "heal")).thenReturn("{bad-json");
+        when(stringValueOps.get(CacheConstants.URL_CACHE_PREFIX + "heal"))
+                .thenReturn("{\"originalUrl\":\"https://example.com/recovered\",\"permanent\":true}");
         when(urlRepository.findByAliasAndActiveTrue("heal")).thenReturn(Optional.of(doc));
 
         CachedUrlEntry entry = redirectService.resolveUrl("heal");
@@ -71,7 +74,11 @@ class RedirectServiceTest {
         assertThat(entry.originalUrl()).isEqualTo("https://example.com/recovered");
         assertThat(entry.permanent()).isTrue();
         verify(redisTemplate).delete(CacheConstants.URL_CACHE_PREFIX + "heal");
-        verify(stringValueOps).set(eq(CacheConstants.URL_CACHE_PREFIX + "heal"), anyString(), eq(Duration.ofHours(24)));
+        verify(stringValueOps).set(
+                eq(CacheConstants.URL_CACHE_PREFIX + "heal"),
+                eq("1|https://example.com/recovered"),
+                eq(Duration.ofHours(24))
+        );
     }
 
     @Test
@@ -79,7 +86,7 @@ class RedirectServiceTest {
         UrlDocument expired = UrlDocument.builder()
                 .alias("exp")
                 .originalUrl("https://example.com")
-                .expiresAt(LocalDateTime.now().minusSeconds(5))
+                .expiresAt(Instant.now().minusSeconds(5))
                 .active(true)
                 .build();
         when(stringValueOps.get(CacheConstants.URL_CACHE_PREFIX + "exp")).thenReturn(null);

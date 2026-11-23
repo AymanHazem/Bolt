@@ -26,8 +26,8 @@
 - **Framework:** Spring Boot 4.0.3
 - **Database:** MongoDB (Persistent storage)
 - **Cache:** Redis (Redirection layer & QR code cache)
-- **QR Engine:** QRGen (based on ZXing)
-- **Data Handling:** Jackson (JSON serialization), Lombok
+- **QR Engine:** ZXing (`com.google.zxing:core`)
+- **Data Handling:** Jackson 3 (Spring Boot starter JSON), Lombok
 - **Infrastructure:** Docker & Docker Compose
 
 ---
@@ -82,10 +82,10 @@ This will start:
 
 | Method | Endpoint | Description |
 | :--- | :--- | :--- |
-| `POST` | `/api/v1/urls` | Create a shortened URL |
-| `GET` | `/api/v1/urls/{alias}` | Get metadata for a specific alias |
-| `DELETE` | `/api/v1/urls/{alias}` | Deactivate/Delete a shortened URL |
-| `GET` | `/api/v1/urls/{alias}/qr` | Retrieve the QR code image (PNG) |
+| `POST` | `/urls` (`?includeQr=true`) | Create a shortened URL (optional inline base64 QR) |
+| `GET` | `/urls/{alias}` (`?includeQr=true`) | Get metadata for a specific alias (optional inline base64 QR) |
+| `DELETE` | `/urls/{alias}` | Deactivate/Delete a shortened URL |
+| `GET` | `/urls/{alias}/qr` | Retrieve the QR code image (PNG) |
 
 ### Redirection
 
