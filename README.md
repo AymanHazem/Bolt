@@ -1,4 +1,4 @@
-# ⚡ Bolt: High-Performance URL Shortener
+# Bolt: High-Performance URL Shortener
 
 [![Spring Boot](https://img.shields.io/badge/Spring%20Boot-4.0.3-brightgreen.svg)](https://spring.io/projects/spring-boot)
 [![Java](https://img.shields.io/badge/Java-25-orange.svg)](https://openjdk.org/)
